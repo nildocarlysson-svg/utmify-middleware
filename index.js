@@ -1,102 +1,69 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import express from "express";
+import crypto from "crypto";
 
-const HEADERS = {
-  "Content-Type": "application/json",
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type"
-};
+const app = express();
 
-serve(async (req) => {
-  if (req.method === "OPTIONS") {
-    return new Response(null, { status: 200, headers: HEADERS });
+// ⚠️ PRECISAMOS DO BODY RAW PARA VALIDAR ASSINATURA
+app.use(express.json({
+  verify: (req, res, buf) => {
+    req.rawBody = buf;
   }
+}));
 
+const PORT = process.env.PORT || 8080;
+const CHECKOUT_SECRET = process.env.CHECKOUTPAGE_WEBHOOK_SECRET;
+const UTMIFY_TOKEN = process.env.UTMIFY_API_TOKEN;
+
+function verifySignature(req) {
+  const signature = req.headers["x-webhook-signature"];
+  if (!signature || !CHECKOUT_SECRET) return false;
+
+  const hmac = crypto
+    .createHmac("sha256", CHECKOUT_SECRET)
+    .update(req.rawBody)
+    .digest("hex");
+
+  return signature === `sha256=${hmac}`;
+}
+
+app.post("/", async (req, res) => {
   try {
-    const body = await req.json();
-    const raw = body.rawSaleData || body;
-
-    if (!raw) {
-      return new Response(JSON.stringify({ error: "Payload inválido" }), {
-        status: 400,
-        headers: HEADERS
-      });
+    // 🔐 Verificar assinatura
+    if (!verifySignature(req)) {
+      return res.status(401).json({ error: "Invalid signature" });
     }
 
-    // 🔹 Normalizações obrigatórias
-    const orderId = String(raw.orderId || raw.id);
-    const status =
-      raw.status === "paid"
-        ? "paid"
-        : raw.status === "refunded"
-        ? "refunded"
-        : "pending";
-
-    const createdAt = new Date(
-      raw.created_at || Date.now()
-    ).toISOString();
-
-    const approvedDate =
-      status === "paid"
-        ? new Date(
-            raw.payment_confirmed_at || Date.now()
-          ).toISOString()
-        : undefined;
-
-    const totalUsdCents = Math.max(
-      1,
-      Math.floor(raw.priceInUsdCents || raw.amountUsdCents || 0)
-    );
-
-    // 🔹 UTMs limpas
-    const trackingParameters = Object.fromEntries(
-      Object.entries({
-        utm_source: raw.utm_source,
-        utm_medium: raw.utm_medium,
-        utm_campaign: raw.utm_campaign,
-        utm_content: raw.utm_content,
-        utm_term: raw.utm_term,
-        src: raw.src,
-        sck: raw.sck
-      }).filter(([_, v]) => v)
-    );
+    const data = req.body.rawSaleData || req.body;
 
     const payload = {
-      orderId,
+      orderId: data.orderId || data.id,
       platform: "checkoutpage",
-      paymentMethod: raw.paymentMethod || "other",
-      status,
-      createdAt,
-      approvedDate,
-
+      status: "paid",
+      paymentMethod: data.paymentMethod || "other",
+      createdAt: new Date().toISOString(),
       customer: {
-        name: raw.buyerName || "Cliente",
-        email: raw.buyerEmail || "",
-        phone: raw.buyerPhone || "",
-        country: "AO",
-        ip: raw.clientIp || "0.0.0.0"
+        name: data.buyerName || "Cliente",
+        email: data.buyerEmail || "",
+        phone: data.buyerPhone || "",
+        country: "AO"
       },
-
       products: [
         {
-          id: raw.productId || "produto",
-          name: raw.productName || "Produto",
-          planId: raw.productId || "plano",
-          planName: raw.productName || "Plano",
-          quantity: raw.quantity || 1,
-          priceInCents: totalUsdCents
+          id: data.productId,
+          name: data.productName || "Produto",
+          quantity: 1,
+          priceInCents: Math.round((data.amount || 0) * 100)
         }
       ],
-
-      commission: {
-        totalPriceInCents: totalUsdCents,
-        gatewayFeeInCents: Math.floor(totalUsdCents * 0.07),
-        userCommissionInCents: Math.floor(totalUsdCents * 0.93),
-        currency: "USD"
-      },
-
-      trackingParameters,
-      affiliateCode: raw.affiliateCode || undefined
+      trackingParameters: {
+        utm_source: data.utm_source || null,
+        utm_medium: data.utm_medium || null,
+        utm_campaign: data.utm_campaign || null,
+        utm_content: data.utm_content || null,
+        utm_term: data.utm_term || null,
+        src: data.src || null,
+        sck: data.sck || null
+      }
     };
 
     const response = await fetch(
@@ -105,7 +72,7 @@ serve(async (req) => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-api-token": Deno.env.get("UTMIFY_API_TOKEN")
+          "x-api-token": UTMIFY_TOKEN
         },
         body: JSON.stringify(payload)
       }
@@ -114,20 +81,19 @@ serve(async (req) => {
     const text = await response.text();
 
     if (!response.ok) {
-      console.error("Erro UTMify:", text);
-      return new Response(text, { status: response.status, headers: HEADERS });
+      console.error("UTMify error:", text);
+      return res.status(500).json({ error: text });
     }
 
-    return new Response(JSON.stringify({ success: true }), {
-      status: 200,
-      headers: HEADERS
-    });
+    console.log("✅ Venda enviada ao UTMify");
+    return res.json({ success: true });
 
   } catch (err) {
-    console.error("Erro geral:", err);
-    return new Response(JSON.stringify({ error: err.message }), {
-      status: 500,
-      headers: HEADERS
-    });
+    console.error(err);
+    return res.status(500).json({ error: "Internal error" });
   }
+});
+
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
 });
