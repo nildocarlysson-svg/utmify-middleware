@@ -4,6 +4,7 @@ import fetch from "node-fetch";
 const app = express();
 app.use(express.json());
 
+// Rota do webhook
 app.post("/webhook/checkoutpage", async (req, res) => {
   try {
     const event = req.body;
@@ -14,7 +15,7 @@ app.post("/webhook/checkoutpage", async (req, res) => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": "Bearer 7L2MyFVIW3rzfDxBA8j1qsVKja8d8QxAtGQ"
+          "Authorization": `Bearer ${process.env.UTMIFY_API_KEY}`
         },
         body: JSON.stringify(event)
       }
@@ -30,6 +31,8 @@ app.post("/webhook/checkoutpage", async (req, res) => {
   }
 });
 
-app.listen(3000, () => {
-  console.log("Middleware rodando na porta 3000");
+// 🚨 PORTA DO RAILWAY (OBRIGATÓRIO)
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Middleware rodando na porta ${PORT}`);
 });
