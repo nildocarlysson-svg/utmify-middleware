@@ -3,7 +3,6 @@ import crypto from "crypto";
 
 const app = express();
 
-// ⚠️ PRECISAMOS DO BODY RAW PARA VALIDAR ASSINATURA
 app.use(express.json({
   verify: (req, res, buf) => {
     req.rawBody = buf;
@@ -18,41 +17,56 @@ function verifySignature(req) {
   const signature = req.headers["x-webhook-signature"];
   if (!signature || !CHECKOUT_SECRET) return false;
 
-  const hmac = crypto
+  const expected = crypto
     .createHmac("sha256", CHECKOUT_SECRET)
     .update(req.rawBody)
     .digest("hex");
 
-  return signature === `sha256=${hmac}`;
+  return signature === `sha256=${expected}`;
+}
+
+function normalizePaymentMethod(method = "") {
+  const map = {
+    pix: "pix",
+    credit_card: "credit_card",
+    card: "credit_card",
+    boleto: "boleto",
+    paypal: "paypal"
+  };
+  return map[method] || "unknown";
 }
 
 app.post("/", async (req, res) => {
   try {
-    // 🔐 Verificar assinatura
     if (!verifySignature(req)) {
       return res.status(401).json({ error: "Invalid signature" });
     }
 
     const data = req.body.rawSaleData || req.body;
 
+    const now = new Date().toISOString();
+
     const payload = {
-      orderId: data.orderId || data.id,
+      orderId: String(data.orderId || data.id),
       platform: "checkoutpage",
+      paymentMethod: normalizePaymentMethod(data.paymentMethod),
       status: "paid",
-      paymentMethod: data.paymentMethod || "other",
-      createdAt: new Date().toISOString(),
+      createdAt: now,
+      approvedDate: now,
       customer: {
         name: data.buyerName || "Cliente",
         email: data.buyerEmail || "",
         phone: data.buyerPhone || "",
+        document: null,
         country: "AO"
       },
       products: [
         {
-          id: data.productId,
-          name: data.productName || "Produto",
+          id: String(data.productId || "product"),
+          planId: String(data.productId || "product"),
+          planName: data.productName || "Produto",
           quantity: 1,
-          priceInCents: Math.round((data.amount || 0) * 100)
+          priceInCents: Math.max(1, Math.round((data.amount || 0) * 100))
         }
       ],
       trackingParameters: {
@@ -81,7 +95,7 @@ app.post("/", async (req, res) => {
     const text = await response.text();
 
     if (!response.ok) {
-      console.error("UTMify error:", text);
+      console.error("❌ UTMify error:", text);
       return res.status(500).json({ error: text });
     }
 
@@ -95,5 +109,5 @@ app.post("/", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`🚀 Middleware rodando na porta ${PORT}`);
 });
