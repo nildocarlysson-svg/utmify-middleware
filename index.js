@@ -17,12 +17,12 @@ function verifySignature(req) {
   const signature = req.headers["x-webhook-signature"];
   if (!signature || !CHECKOUT_SECRET) return false;
 
-  const expected = crypto
+  const hash = crypto
     .createHmac("sha256", CHECKOUT_SECRET)
     .update(req.rawBody)
     .digest("hex");
 
-  return signature === `sha256=${expected}`;
+  return signature === `sha256=${hash}`;
 }
 
 function normalizePaymentMethod(method = "") {
@@ -43,8 +43,11 @@ app.post("/", async (req, res) => {
     }
 
     const data = req.body.rawSaleData || req.body;
-
     const now = new Date().toISOString();
+
+    const amount = Math.max(1, Math.round((data.amount || 1) * 100));
+    const gatewayFee = Math.floor(amount * 0.07);
+    const userCommission = amount - gatewayFee;
 
     const payload = {
       orderId: String(data.orderId || data.id),
@@ -63,12 +66,19 @@ app.post("/", async (req, res) => {
       products: [
         {
           id: String(data.productId || "product"),
+          name: data.productName || "Produto",
           planId: String(data.productId || "product"),
           planName: data.productName || "Produto",
           quantity: 1,
-          priceInCents: Math.max(1, Math.round((data.amount || 0) * 100))
+          priceInCents: amount
         }
       ],
+      commission: {
+        totalPriceInCents: amount,
+        gatewayFeeInCents: gatewayFee,
+        userCommissionInCents: userCommission,
+        currency: "USD"
+      },
       trackingParameters: {
         utm_source: data.utm_source || null,
         utm_medium: data.utm_medium || null,
